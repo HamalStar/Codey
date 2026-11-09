@@ -265,8 +265,12 @@ py -3 -m pip install numpy websockets sherpa-onnx pyserial zstandard
 
 - If scripts are blocked: `powershell -ExecutionPolicy Bypass -File .\deploy.ps1`.
 - Allow Python on **private networks** when the Windows Firewall prompt appears.
-- On the watch setup page (`Codey-Setup` → `192.168.4.1`), set **Companion Mac IP** to the PC's
-  LAN IP (printed at startup), or plug the watch in over USB-C to use the wired link.
+- The watch finds the Companion by itself: the Companion broadcasts a UDP beacon on port `8789`
+  every 2 s (`CODEY_DISCOVERY=0` turns it off, `CODEY_DISCOVERY_PORT` changes the port), and the
+  watch uses the beacon's source IP. Lookup order: mDNS → beacon → **Companion Mac IP** from the
+  setup page (`Codey-Setup` → `192.168.4.1`) → built-in fallback. Or plug in over USB-C for the wired link.
+  The beacon only carries ports and the hostname, and stays inside the LAN broadcast domain; it does
+  not cross VLANs or guest-network isolation.
 - Claude usage: in `%USERPROFILE%\.claude\settings.json` set
   `"statusLine": {"type": "command", "command": "py -3 C:/path/to/Codey/companion/codey_statusline.py"}`.
   To keep an existing statusline, put its command in `CODEY_STATUSLINE_CMD`.

@@ -354,6 +354,7 @@ static bool     g_forceRender = false;       // 动作发生时强制立即重�
 #include "codey_pages.h"   // render() + drawWaitBanner + renderUsage/List/Detail(用 .ino 全局 + 前向声明)
 
 #include "codey_portal.h"   // 开机/配网屏 + wifiAutoConnect + 自研配置门户(用 .ino 全局 + wifi_store)
+#include "codey_discover.h" // 局域网 UDP 信标自动发现 Companion(免填 IP)
 
 // ---------- Arduino entry points ----------
 static bool timeSane(time_t e) { return epochSane((long)e); }   // ~2023..2030, rejects garbage RTC(见 codey_ui.h)
@@ -393,7 +394,7 @@ static String b64(const String& in) {
   return out;
 }
 
-// find the Companion Mac on the LAN by mDNS hostname (robust to DHCP IP changes); else fixed fallback
+// find the Companion on the LAN: mDNS hostname -> UDP beacon -> manual IP -> fixed fallback (all robust to DHCP changes but the last two)
 static void resolveMac() {
   if (g_remoteHost.length()) {                       // 远程模式:走 ngrok HTTPS,不做 mDNS/LAN 解析
     g_companionUrl = "https://" + g_remoteHost + "/codey/state";
@@ -405,8 +406,9 @@ static void resolveMac() {
     IPAddress a = MDNS.queryHost(MAC_HOSTNAME, 2000);
     if (a != IPAddress((uint32_t)0)) ip = a.toString();
   }
-  if (ip.length() == 0 && g_manualMac[0]) ip = String(g_manualMac);   // 2) 手填(公司网 mDNS 被拦)
-  if (ip.length() == 0) ip = MAC_FALLBACK_IP;                       // 3) 兜底
+  if (ip.length() == 0) discoverCompanion(ip);                      // 2) UDP 信标自动发现(免填 IP)
+  if (ip.length() == 0 && g_manualMac[0]) ip = String(g_manualMac);   // 3) 手填(没有信标的旧 companion)
+  if (ip.length() == 0) ip = MAC_FALLBACK_IP;                       // 4) 兜底
   g_macIp = ip;
   g_companionUrl = "http://" + g_macIp + ":8787/codey/state";
   Serial.printf("Companion Mac -> %s\n", g_macIp.c_str());

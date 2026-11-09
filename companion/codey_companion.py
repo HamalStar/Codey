@@ -53,6 +53,10 @@ def main():
     threading.Thread(target=usb_link.run, args=(app, asr_stream.make_backend), daemon=True).start()
     usb_hint = "COMx (Espressif VID 303A)" if os.name == "nt" else "/dev/cu.usbmodem*"
     print(f"Codey USB link  -> {usb_hint} (有线兜底,优先)")
+    from codey import discovery
+    if discovery.enabled():
+        threading.Thread(target=discovery.run, args=(PORT, asr_stream.PORT), daemon=True).start()
+        print(f"Codey discovery -> UDP 广播 :{discovery.PORT} 每 {discovery.INTERVAL_S:g}s(手表免填 IP)")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), make_handler(app))
     print(f"Codey companion -> http://{lan_ip()}:{PORT}/codey/state  (port {PORT})")
     others = lan_ips()[1:]

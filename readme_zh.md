@@ -263,8 +263,17 @@ py -3 -m pip install numpy websockets sherpa-onnx pyserial zstandard
 
 ### 手表连接
 
-Windows 没有 Mac 那样稳定的 mDNS 主机名。手表配网页（`Codey-Setup` 热点 → `192.168.4.1`）里
-把 **Companion Mac IP** 填成电脑的局域网 IP 即可（建议在路由器里给电脑固定 IP）。
+手表和电脑连在同一个 Wi-Fi 下就能自动找到 Companion，不用填 IP：Companion 每 2 秒在局域网里
+广播一个 UDP 信标（端口 `8789`），手表收到后用信标的来源地址连接。电脑换了 IP 也会自动跟上。
+
+手表找主机的顺序：mDNS 主机名 → UDP 信标 → 配网页（`Codey-Setup` 热点 → `192.168.4.1`）里手填的
+**Companion Mac IP** → 固件内置兜底 IP。
+
+- 信标只含端口和主机名，不含会话数据；只在同一局域网广播域内传播，跨 VLAN、访客网络隔离时收不到，
+  这时改用手填 IP。
+- 关闭广播：`CODEY_DISCOVERY=0`；换端口：`CODEY_DISCOVERY_PORT`（需与固件 `DISCOVERY_PORT` 一致）。
+- 移植到其它固件：带上 `sketches/codey_dash/codey_discover.h`，在找主机的地方调用 `discoverCompanion(ip)`。
+
 也可以直接用 USB-C 线把手表接到电脑：Companion 会自动走有线链路，不需要配网。
 
 ### Claude 额度（statusline）
