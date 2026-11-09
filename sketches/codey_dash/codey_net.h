@@ -3,10 +3,12 @@
 // wsListen 在本头 #include 之前已定义;读写 .ino 的网络/会话全局。usbCfgGet/usbCfgSet(路径 B配置)
 // 还依赖 wifi_store.h 的 g_nets/g_netCount/wifiStoreTouch,同样已在本头 #include 前就位。
 #pragma once
+#ifndef CODEY_FACTORY
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#endif
 #include <ArduinoJson.h>
 #include <sys/time.h>
 #include "codey_ui.h"
@@ -42,14 +44,18 @@ static void parseSession(JsonObject so, Sess& s) {
   s.startedAt= so["started_at"]     | 0L;
   s.memKb    = so["memory"]         | 0L;
   s.nports = 0;
-  for (JsonVariant pv : so["ports"].as<JsonArray>()) { if (s.nports < MAX_PORTS) s.ports[s.nports++] = pv.as<int>(); }
+  const auto ports = so["ports"].as<JsonArray>();
+  for (JsonVariant pv : ports) { if (s.nports < MAX_PORTS) s.ports[s.nports++] = pv.as<int>(); }
 }
 
 // state doc 解析落地(HTTP fetchState 与 USB U_STATE 共用):从 doc 更新所有全局显示/会话状态。
 static void applyStateDoc(JsonDocument& doc) {
   g_stale = doc["stale"] | false;
+#ifndef CODEY_FACTORY
   const char* a = doc["asr_url"] | "";           // 远程下发的 wss:// ASR url(局域网为空)
   strncpy(g_asrUrl, a, sizeof(g_asrUrl) - 1); g_asrUrl[sizeof(g_asrUrl) - 1] = 0;
+
+#endif
 
   // display 配置:列开关 + provider 开关;缺省/缺键 → true(旧 companion 行为不变)。
   // 先在局部组装,最后一次性赋给 g_disp(单写者:netTask;主loop 只读)。
@@ -87,7 +93,8 @@ static void applyStateDoc(JsonDocument& doc) {
     PROV[i].dirtyRepos  = pr["agg"]["dirty_repos"]   | 0;
     PROV[i].tokPerMin   = pr["agg"]["tokens_per_min"]| 0L;
     int n = 0;
-    for (JsonObject so : pr["sessions"].as<JsonArray>()) {
+    const auto sessions = pr["sessions"].as<JsonArray>();
+    for (JsonObject so : sessions) {
       if (n >= MAX_SESS) break;
       parseSession(so, PROV[i].sess[n]); n++;
     }
@@ -96,6 +103,9 @@ static void applyStateDoc(JsonDocument& doc) {
   { JsonVariantConst ch = doc["chime"];               // 持久最新完成 {agent,seq};主loop 据 seq 增量响铃
     if (!ch.isNull()) { g_chimeSeq = ch["seq"] | 0; g_chimeClaude = (strcmp(ch["agent"] | "", "codex") != 0); } }
   if (detailProv >= 0 && detailIdx >= PROV[detailProv].nsess) detailProv = -1;
+#ifdef CODEY_FACTORY
+  factorySetCompanionTime(doc["ts"] | 0L);
+#else
   long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
   if (epochSane(ts)) {
     struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
@@ -103,8 +113,10 @@ static void applyStateDoc(JsonDocument& doc) {
   }
   Serial.printf("[state] claude %d/%d  codex %d/%d  stale=%d\n",
                 PROV[0].sessUsed, PROV[0].weekUsed, PROV[1].sessUsed, PROV[1].weekUsed, g_stale);
+#endif
 }
 
+#ifndef CODEY_FACTORY
 // fetch normalized usage JSON from the Companion and update PROV with real Claude data
 static void fetchState() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -284,3 +296,5 @@ static void netTask(void*) {
     vTaskDelay(5 / portTICK_PERIOD_MS);
   }
 }
+
+#endif

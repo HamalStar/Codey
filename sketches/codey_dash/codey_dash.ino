@@ -11,7 +11,12 @@
 //        BtnB hold=push-to-talk voice (release=submit). Shake=next provider. Completion chime via state.chime.
 // True-black background, full-screen PSRAM canvas for flicker-free animation; VLW AA + efont CJK.
 
+#ifdef CODEY_FACTORY
+#include <apps/app_codey/codey_factory_platform.h>
+#else
 #include <M5Unified.h>
+#define CODEY_BTN_A M5.BtnA
+#define CODEY_BTN_B M5.BtnB
 #include <WiFi.h>           // STA 连接 + AP 热点 + scanNetworks
 #include <WebServer.h>      // 自研 WiFi 配置门户(历史列表/一键连/删除/扫描)
 #include <DNSServer.h>      // captive portal:连上热点自动弹配置页
@@ -25,6 +30,10 @@
 #include <sys/time.h>       // settimeofday() — set the clock from the Companion's epoch
 #include "freertos/stream_buffer.h"  // 语音 PCM 跨核(主loop -> netTask)
 #include "wifi_store.h"     // 多 WiFi 记忆:历史网络(SSID/密码/连接次数)的 NVS 数据层
+#endif
+#include <ArduinoJson.h>
+#include <string>
+#include "freertos/stream_buffer.h"
 #include "codey_ui.h"
 #include "session_store.h"
 #include "fonts/jbmono_16.h"
@@ -53,10 +62,14 @@ static int g_clkH = 0, g_clkM = 0;  // refreshed from the on-board RTC each seco
 static DispCfg g_disp = dispDefault();
 
 // ---------- canvas + state ----------
+#ifdef CODEY_FACTORY
+static M5Canvas cv, g_ringA, g_ringB, g_voiceBg;
+#else
 static M5Canvas cv(&M5.Display);
 static M5Canvas g_ringA(&M5.Display), g_ringB(&M5.Display);   // 仪表盘/列表各缓存一张 AA 环;每页 render 用函数内 static 记 pct 缓存键
-static bool     g_ringAok = false, g_ringBok = false;
 static M5Canvas g_voiceBg(&M5.Display);                       // 语音时缓存「暗化的 session 底页」,每帧只 blit+叠层(不重渲整页)→ 按键响应快
+#endif
+static bool     g_ringAok = false, g_ringBok = false;
 static bool     g_voiceBgOk = false;                          // sprite 是否分配成功(失败则退化为每帧重渲)
 static bool     g_voiceBgDirty = true;                        // 需重建底图缓存(语音开始时置位)
 static int      page = 0;
@@ -74,10 +87,14 @@ static float    g_micLevel = 0.12f;  // smoothed mic level (0..1)
 static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizing, 3 result
 static volatile uint16_t g_voiceSeq = 0;   // 每次会话自增;只认当前 seq 的 stt(丢弃上次迟到结果)
 static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
+#ifndef CODEY_FACTORY
 static const int    REC_RATE = 16000;
 static const size_t STREAM_CHUNK = 512;                        // 每段/每 WS 帧样本数(~32ms)
 static int16_t  g_seg[2][STREAM_CHUNK];                        // 双缓冲小段录音(FIFO ping-pong)
 static int      g_segHead = 0;                                 // 下一个待消费(队首)的段缓冲
+#else
+static constexpr size_t STREAM_CHUNK = 480; // 30 ms at 16 kHz
+#endif
 static bool     g_heardSpeech = false;
 static uint32_t g_silenceT0 = 0;     // start of trailing silence -> auto-stop
 static uint32_t g_resultT0 = 0;      // when the result was shown (dismiss timeout)
@@ -85,8 +102,8 @@ static uint32_t g_finalReqT0 = 0;    // when listen-stop was requested (final ti
 static volatile bool g_sttFinal = false;     // server sent a final stt
 static float    g_noiseFloor = 0.06f;// adaptive VAD noise floor
 // ---- network: 所有阻塞 IO 都在 netTask/core0;主loop 不等待 ----
+#ifndef CODEY_FACTORY
 static WebSocketsClient g_ws;        // ONLY touched by netTask
-static volatile bool g_wsConn = false;
 static const char*    MAC_HOSTNAME    = "testnull-2";
 static const char*    MAC_FALLBACK_IP = "10.100.0.89";
 static String         g_macIp = "10.100.0.89";   // netTask only
@@ -97,49 +114,76 @@ static String         g_remoteHost = "";          // ngrok 域名(如 your.ngrok
 static String         g_remoteAuthRaw = "";       // 原始 "user:pass"(门户回填用;空=无认证)
 static String         g_remoteAuthB64 = "";       // base64("user:pass"),空=无 Basic 认证(boot 时算)
 static char           g_asrUrl[160] = {0};         // Companion /codey/state 下发的 wss:// ASR url(netTask 写/读)
+#endif
+static volatile bool g_wsConn = false;
 static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
 static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
 static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
 static volatile bool g_netFocusReq = false;  // true=发 focus(详情页点屏切到此会话;主loop -> netTask)
 static char          g_focusSid[40] = {0};   // 要切到的会话 id(主loop 写,netTask 读)
 static char          g_voiceSid[40] = {0};   // 本轮语音的目标会话 id(详情页发起则非空;流式同步到它的 Mac 输入)
+#ifndef CODEY_FACTORY
 static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
+#endif
 static volatile bool g_usbActive = false;     // USB 有线链路在线(netTask 写/读;在=优先 USB,不走网络)
+#ifndef CODEY_FACTORY
 static volatile uint32_t g_usbLastRx = 0;     // 最近一帧时间(ms);超时判离线
 static volatile bool g_bootReady = false;     // setup 跑完置真;之前 USB 只认 HELLO_ACK,不处理 STATE/STT(避免早启核1崩→黑屏)
+#endif
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
+#ifndef CODEY_FACTORY
 static bool     g_rtcSynced = false;
+#endif
 // ---- 完成提示音(chime):companion 下发持久 {agent,seq};seq 增长 → 响一次 ----
 static volatile uint32_t g_chimeSeq = 0;     // 最新完成事件 seq(netTask 写,主loop 读)
 static volatile bool     g_chimeClaude = true;  // 该完成属 claude(880Hz)/codex(660Hz)
 static uint32_t g_chimePlayed = 0;           // 主loop 已响过的 seq
 static bool     g_chimeSynced = false;       // 首拉对齐:不为开机前的旧完成补响
 // ---- settings page ----
+#ifndef CODEY_FACTORY
 static Preferences g_prefs;
+#endif
 static bool     g_inSettings = false;
 static int      g_setSel = 0;
 static uint8_t  g_bright = 255;      // display brightness 0-255 (persisted)
 static uint8_t  g_volume = 50;       // speaker volume 0-100 (persisted)
+#ifdef CODEY_FACTORY
+static const char* SET_ITEMS[4] = { "系统 WiFi 设置", "亮度", "音量", "返回" };
+#else
 static const char* SET_ITEMS[4] = { "WiFi 配置", "亮度", "音量", "返回" };
+#endif
 static const int   SET_N = 4;
 static uint32_t lastActiveMs = 0;    // last interaction/motion (screen-dim timeout)
 static bool     g_dim = false;       // screen dimmed
 static float    g_accMag = 1.0f;     // last accel magnitude (motion detection)
 static uint32_t g_lastShake = 0;     // shake-gesture debounce
 // ---- live data from the Companion ----
+#ifndef CODEY_FACTORY
 static String g_companionUrl = "http://10.100.0.89:8787/codey/state";   // rebuilt from g_macIp at boot
+#endif
 static volatile bool g_haveData = false;
 static volatile bool g_companionOk = false;   // usage 接口(Companion)是否可达 -> 尾灯 绿/红
 static bool     g_stale = false;
-static uint32_t g_lastFetch = 0;
+#ifndef CODEY_FACTORY
 static int      g_fetchFails = 0;    // consecutive fetch failures -> re-resolve Mac (IP drift self-heal)
+
+#endif
+
+static void pushFrame() {
+#ifdef CODEY_FACTORY
+  cv.pushSprite(&GetHAL().getDisplay(), 0, 0);
+#else
+  cv.pushSprite(0, 0);
+#endif
+}
 
 #include "codey_mascot.h"   // anim(updateAnim/aBlink/aGlanceSpring)+ AA arc(drawArcRange/drawArc)+ Claude/Codex/drawMascot
 
 #include "codey_widgets.h"   // header/dots/wifi/meter/tile-helpers/session-count/blitProviderArc + 状态/心情/格式
 
 // ---- WebSocket streaming-ASR client ----
+#ifndef CODEY_FACTORY
 static void wsListen(bool start) {            // listen-control messages (xiaozhi-style)
   if (!g_wsConn) return;
   if (start) {
@@ -175,6 +219,8 @@ static String listenStartJson() {
   return m;
 }
 
+#endif
+
 // stt 落地(WS 与 USB 共用):seq 过滤陈旧会话 + 写 g_transcript + final 置位。
 static void voiceApplyStt(const char* text, bool final, int seq, bool hasSeq) {
   if (hasSeq && (uint16_t)seq != g_voiceSeq) return;          // 丢弃陈旧会话的迟到 stt
@@ -183,6 +229,7 @@ static void voiceApplyStt(const char* text, bool final, int seq, bool hasSeq) {
   if (final) g_sttFinal = true;
 }
 
+#ifndef CODEY_FACTORY
 static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
   if (type == WStype_CONNECTED) {
     g_wsConn = true;
@@ -199,6 +246,8 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
       voiceApplyStt(doc["text"] | "", doc["final"] | false, doc["seq"] | 0, doc["seq"].is<int>());
   }
 }
+
+#endif
 
 // ---------- voice visualizer ----------
 // 圆屏语音可视化:中心呼吸光球 + 一圈随麦克风电平起伏的径向声条(叠加行波 → 有机"声波环"灵动感)。
@@ -242,16 +291,16 @@ static void drawVoiceViz(int cx, int cy, float level, float t, uint32_t color, i
 }
 
 // draw a UTF-8 (CJK) string centered at (cx,cy), wrapping by codepoint to fit maxW
-static void drawWrappedCJK(const String& s, int cx, int cy, int maxW, int lineH) {
+static void drawWrappedCJK(const std::string& s, int cx, int cy, int maxW, int lineH) {
   const int n = s.length();
-  String lines[6]; int nl = 0; String cur = "";
+  std::string lines[6]; int nl = 0; std::string cur;
   int i = 0;
   while (i < n && nl < 6) {
     unsigned char c = (unsigned char)s[i];
     int len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
     if (i + len > n) len = n - i;
-    String ch = s.substring(i, i + len);
-    String cand = cur + ch;
+    std::string ch = s.substr(i, len);
+    std::string cand = cur + ch;
     if (cur.length() > 0 && cv.textWidth(cand.c_str()) > maxW) { lines[nl++] = cur; cur = ch; }
     else cur = cand;
     i += len;
@@ -266,10 +315,25 @@ static void drawWrappedCJK(const String& s, int cx, int cy, int maxW, int lineH)
 // 纯 ASCII 串(无 >=0x80 字节)→ 可用 VLW 抗锯齿渲染;含 CJK → 用 efont 位图(CJK 无 VLW)。
 static bool isPureAscii(const char* s) { for (; *s; ++s) if ((unsigned char)*s >= 0x80) return false; return true; }
 
+static void setLargeCjkFont() {
+#ifdef CODEY_FACTORY
+  // Keep one CJK glyph set in the factory image. 16 px × 1.5 yields
+  // the 24 px layout size without linking a second set of glyphs.
+  cv.setFont(&fonts::efontCN_16);
+  cv.setTextSize(1.5f);
+#else
+  cv.setFont(&fonts::efontCN_24);
+#endif
+}
+
 // 转写文本:纯 Latin/数字走 VLW(Grotesk,抗锯齿),含中文走 efont。drawWrappedCJK 按当前字体测宽换行。
-static void drawTranscript(const String& s, int cx, int cy, int maxW) {
+static void drawTranscript(const std::string& s, int cx, int cy, int maxW) {
   if (isPureAscii(s.c_str())) { cv.loadFont(Grotesk20); drawWrappedCJK(s, cx, cy, maxW, 28); cv.unloadFont(); }
-  else                        { cv.setFont(&fonts::efontCN_24); drawWrappedCJK(s, cx, cy, maxW, 34); }
+  else {
+    setLargeCjkFont();
+    drawWrappedCJK(s, cx, cy, maxW, 34);
+    cv.setTextSize(1);
+  }
 }
 
 // 语音叠层元素(环/转写/状态):画在 render() 已铺好的「暗化底页」之上,不含压暗/底页。
@@ -287,7 +351,7 @@ static void drawVoiceOverlay() {
   // 2) 流式转写(顶部):Latin VLW 抗锯齿 / CJK efont;warm 实时 → white 定稿
   if (hasText) {
     cv.setTextColor(c565(result ? 0xFFFFFF : 0xFFD27A));
-    drawTranscript(String(g_transcript), CX, 100, 412);
+    drawTranscript(g_transcript, CX, 100, 412);
     cv.drawFastHLine(CX - 130, 176, 260, c565(shade(color, -0.3f)));   // divider under transcript
   }
 
@@ -353,6 +417,7 @@ static bool     g_forceRender = false;       // 动作发生时强制立即重�
 
 #include "codey_pages.h"   // render() + drawWaitBanner + renderUsage/List/Detail(用 .ino 全局 + 前向声明)
 
+#ifndef CODEY_FACTORY
 #include "codey_portal.h"   // 开机/配网屏 + wifiAutoConnect + 自研配置门户(用 .ino 全局 + wifi_store)
 #include "codey_discover.h" // 局域网 UDP 信标自动发现 Companion(免填 IP)
 
@@ -548,44 +613,75 @@ static void playChime(bool claude) {
 
 // ---------- settings page ----------
 static void savePrefs() { g_prefs.putUChar("bright", g_bright); g_prefs.putUChar("vol", g_volume); }
-static uint8_t nextBright(uint8_t b) {
-  const uint8_t L[4] = { 64, 128, 191, 255 };                  // ~25/50/75/100%
-  for (int i = 0; i < 4; i++) if (b <= L[i]) return L[(i + 1) % 4];
-  return L[0];
+#else
+static void readClock() {
+  const auto clock = GetHAL().getTimeHms();
+  g_clkH = clock.hour;
+  g_clkM = clock.minute;
 }
+
+static void reconfigWiFi() { factoryOpenWifiSetup(); }
+static void playChime(bool claude) { factoryPlayChime(claude, g_volume); }
+static void savePrefs() { factorySavePrefs(g_bright, g_volume); }
+#include "codey_net.h"
+#endif
+
+static uint8_t nextBright(uint8_t b) {
+  const uint8_t levels[] = {64, 128, 191, 255};
+  for (int i = 0; i < 4; i++) if (b <= levels[i]) return levels[(i + 1) % 4];
+  return levels[0];
+}
+
+static void codeySetBrightness(uint8_t value) {
+#ifdef CODEY_FACTORY
+  GetHAL().setBackLightBrightness((value * 100 + 127) / 255);
+#else
+  M5.Display.setBrightness(value);
+#endif
+}
+
 static void renderSettings() {
   cv.fillSprite(c565(0x0a0b0d));
   cv.setTextDatum(middle_center);
-  cv.setFont(&fonts::efontCN_24); cv.setTextColor(c565(COL_CODEX));
+  setLargeCjkFont(); cv.setTextColor(c565(COL_CODEX));
   cv.drawString("设置", CX, 56);
+  cv.setTextSize(1);
   const int y0 = 132, dy = 66;
   for (int i = 0; i < SET_N; i++) {
     int y = y0 + i * dy; bool sel = (i == g_setSel);
     if (sel) cv.fillRoundRect(54, y - 27, SIZE - 108, 54, 12, c565(shade(COL_CLAUDE, -0.55f)));
     cv.drawRoundRect(54, y - 27, SIZE - 108, 54, 12, c565(sel ? COL_CLAUDE : 0x303236));
-    cv.setFont(&fonts::efontCN_24); cv.setTextDatum(middle_left);
+    setLargeCjkFont(); cv.setTextDatum(middle_left);
     cv.setTextColor(c565(sel ? COL_WHITE : 0xB0B2B8));
     cv.drawString(SET_ITEMS[i], 84, y);
+    cv.setTextSize(1);
     char val[16] = "";
     if (i == 1)      snprintf(val, sizeof(val), "%d%%", (g_bright * 100 + 127) / 255);
     else if (i == 2) snprintf(val, sizeof(val), "%d%%", g_volume);
+#ifndef CODEY_FACTORY
     else if (i == 0) strcpy(val, "Web");
+#endif
     if (val[0]) {
       cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_right);
       cv.setTextColor(c565(sel ? COL_WHITE : 0x808389)); cv.drawString(val, SIZE - 84, y);
     }
   }
-  cv.setFont(&fonts::efontCN_24); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x70737a));
+  setLargeCjkFont(); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x70737a));
+#ifdef CODEY_FACTORY
+  cv.drawString("键1下移  键2确定  双键退出", CX, 422);
+#else
   cv.drawString("键1下移  键2确定  双键返回", CX, 422);
-  cv.pushSprite(0, 0);
+#endif
+  cv.setTextSize(1);
+  pushFrame();
 }
 // settings buttons: BtnA(1) = move down, BtnB(2) = confirm/activate
 static void settingsButtons() {
-  if (M5.BtnA.wasPressed()) g_setSel = (g_setSel + 1) % SET_N;
-  if (M5.BtnB.wasPressed()) {
+  if (CODEY_BTN_A.wasPressed()) g_setSel = (g_setSel + 1) % SET_N;
+  if (CODEY_BTN_B.wasPressed()) {
     switch (g_setSel) {
       case 0: reconfigWiFi(); break;                                            // web WiFi portal (blocking)
-      case 1: g_bright = nextBright(g_bright); M5.Display.setBrightness(g_bright); savePrefs(); break;
+      case 1: g_bright = nextBright(g_bright); codeySetBrightness(g_bright); savePrefs(); break;
       case 2: g_volume = (g_volume >= 100) ? 0 : (uint8_t)min(100, g_volume + 25); savePrefs(); break;
       case 3: g_inSettings = false; bootMs = millis(); break;                    // back to dashboard
     }
@@ -626,8 +722,13 @@ static void exitDetail() { detailProv = -1; }
 
 // 每帧调用;抬起沿返回一个动作(否则 ACT_NONE)。列表竖拖滚动在内部实时处理。
 static TouchAction detectTouchAction(uint32_t now) {
+#ifdef CODEY_FACTORY
+  const auto td = GetHAL().getTouchPoint();
+  const bool touching = td.num > 0;
+#else
   auto td = M5.Touch.getDetail();
   bool touching = M5.Touch.getCount() > 0;
+#endif
   TouchAction act = ACT_NONE;
   if (touching) {
     g_tLastX = td.x; g_tLastY = td.y; g_touchLostMs = 0;   // 有触摸:清失触计时(吃掉单帧抖动)
@@ -711,13 +812,17 @@ static void btnALong() {
 }
 // 短按 BtnA:息屏亮屏;否则逐级返回
 static void btnAShort() {
-  if (g_dim) { g_dim = false; M5.Display.setBrightness(g_bright); return; }
+  if (g_dim) { g_dim = false; codeySetBrightness(g_bright); return; }
   if (detailProv >= 0) { exitDetail(); return; }      // 详情 → 列表
   if (g_listView) { g_listView = false; return; }     // 列表 → 主页
 }
 
+#ifdef CODEY_FACTORY
+static void codeyTick() {
+#else
 void loop() {
   M5.update();
+#endif
   uint32_t now = millis();
   // 网络全部在 netTask(core0);主loop 不调 g_ws.loop / fetchState,绝不等待网络
 
@@ -729,8 +834,9 @@ void loop() {
     g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0;
   }
 
+#ifndef CODEY_FACTORY
   static uint32_t bothSince = 0; static bool bothFired = false;   // hold BOTH ~0.4s -> toggle settings
-  if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
+  if (CODEY_BTN_A.isPressed() && CODEY_BTN_B.isPressed()) {
     if (bothSince == 0) bothSince = now;
     if (!bothFired && now - bothSince > 400) {
       bothFired = true; g_setSel = 0; g_inSettings = !g_inSettings;
@@ -738,9 +844,12 @@ void loop() {
     }
   } else {
     bothSince = 0; bothFired = false;
+#else
+  {
+#endif
     if (g_inSettings) {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
-    } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // 按一下右键 → 开录(异步 toggle,免按住)
+    } else if (!g_voice && CODEY_BTN_B.wasPressed() && !CODEY_BTN_A.isPressed()) {   // 按一下右键 → 开录(异步 toggle,免按住)
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
       g_finalReqT0 = 0; g_sttFinal = false;
@@ -753,33 +862,37 @@ void loop() {
         g_vphase = 1;
         if (g_voiceSB) xStreamBufferReset(g_voiceSB);
         g_netListenReq = 1;                                // netTask -> listen:start
+#ifdef CODEY_FACTORY
+        factoryBeginAudio(g_voiceSeq);
+#else
         g_segHead = 0;                                     // 双缓冲:先排 2 段,始终保持 2 段在录(无缝)
         M5.Mic.record(g_seg[0], STREAM_CHUNK, REC_RATE);
         M5.Mic.record(g_seg[1], STREAM_CHUNK, REC_RATE);
         Serial.println("[voice] streaming (seg x2)");
+#endif
       } else {                                             // can't stream -> show why
         g_vphase = 3; g_resultT0 = now;
         strncpy(g_transcript, !g_micOK ? "麦克风不可用" : "语音服务未连接", sizeof(g_transcript) - 1);
         g_transcript[sizeof(g_transcript) - 1] = 0;
       }
-    } else if (g_voice && M5.BtnA.wasPressed()) {                            // 左键:任意阶段立即退出(全程可打断)
-      if (g_vphase != 3 && g_voiceSid[0]) g_netListenReq = 3;   // 录音/识别中取消 → 清已同步进输入框的残留;结果态只关
+    } else if (g_voice && CODEY_BTN_A.wasPressed()) {                            // 左键:任意阶段立即退出(全程可打断)
+      if (g_vphase != 3) g_netListenReq = 3;   // 录音/识别中取消 → 清已同步进输入框的残留;结果态只关
       g_voice = false; g_vphase = 0; g_voiceSeq++;
       Serial.println("[voice] aborted (BtnA)");
-    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasPressed()) {           // 录音中:右键 → 停录识别
+    } else if (g_voice && g_vphase == 1 && CODEY_BTN_B.wasPressed()) {           // 录音中:右键 → 停录识别
       if (now - g_voiceT0 > 250) { g_vphase = 2; g_finalReqT0 = 0; }         // <250ms 视为起录抖动,忽略;在录尾段任其自然完成
-    } else if (g_voice && g_vphase == 2 && M5.BtnB.wasPressed()) {           // 识别中:右键 → 放弃等待立即退出(不卡 2.5s)
-      if (g_voiceSid[0]) g_netListenReq = 3;
+    } else if (g_voice && g_vphase == 2 && CODEY_BTN_B.wasPressed()) {           // 识别中:右键 → 放弃等待立即退出(不卡 2.5s)
+      g_netListenReq = 3;
       g_voice = false; g_vphase = 0; g_voiceSeq++;
       Serial.println("[voice] give up finalize (BtnB)");
-    } else if (g_voice && g_vphase == 3 && M5.BtnB.wasPressed()) {           // 结果/错误:右键 → 关掉(保留定稿)
+    } else if (g_voice && g_vphase == 3 && CODEY_BTN_B.wasPressed()) {           // 结果/错误:右键 → 关掉(保留定稿)
       g_voice = false; g_vphase = 0;
-    } else if (!g_voice && !M5.BtnB.isPressed()) {                           // 左键:短按逐级返回,长按设置
+    } else if (!g_voice && !CODEY_BTN_B.isPressed()) {                           // 左键:短按逐级返回,长按设置
       static uint32_t aDownAt = 0; static bool aLong = false;
-      if (!M5.BtnA.isPressed() && !M5.BtnA.wasReleased()) { aDownAt = 0; aLong = false; }  // 空闲重置:防按键被 BtnB 打断后残留长按态
-      if (M5.BtnA.wasPressed()) { aDownAt = now; aLong = false; }
-      if (M5.BtnA.isPressed() && !aLong && aDownAt && now - aDownAt > 550) { aLong = true; btnALong(); }
-      if (M5.BtnA.wasReleased()) { if (!aLong) btnAShort(); aDownAt = 0; }
+      if (!CODEY_BTN_A.isPressed() && !CODEY_BTN_A.wasReleased()) { aDownAt = 0; aLong = false; }  // 空闲重置:防按键被 BtnB 打断后残留长按态
+      if (CODEY_BTN_A.wasPressed()) { aDownAt = now; aLong = false; }
+      if (CODEY_BTN_A.isPressed() && !aLong && aDownAt && now - aDownAt > 550) { aLong = true; btnALong(); }
+      if (CODEY_BTN_A.wasReleased()) { if (!aLong) btnAShort(); aDownAt = 0; }
     }
   }
 
@@ -789,16 +902,24 @@ void loop() {
   if (g_voice) {
     if (g_vphase == 1) {                                  // LISTENING:消费已录满的段 + 立刻补录(保持 2 段在录)
       int guard = 0;
+#ifdef CODEY_FACTORY
+      int16_t pcm[STREAM_CHUNK];
+      while (guard++ < 4 && factoryReadAudio(g_voiceSeq, pcm)) {
+        const int16_t* seg = pcm;
+#else
       while (g_micOK && M5.Mic.isRecording() < 2 && guard++ < 4) {   // 有空闲槽 = 队首段 g_seg[g_segHead] 已录满
         int16_t* seg = g_seg[g_segHead];
+#endif
         double s = 0; for (size_t i = 0; i < STREAM_CHUNK; i++) { double v = seg[i]; s += v * v; }
         float lvl = sqrtf(s / STREAM_CHUNK) / 2500.0f;    // VAD level + adaptive floor
         g_micLevel += (lvl - g_micLevel) * 0.4f;
         g_noiseFloor += (g_micLevel - g_noiseFloor) * (g_micLevel < g_noiseFloor ? 0.2f : 0.01f);
         if (g_micLevel > g_noiseFloor + 0.12f) g_heardSpeech = true;
-        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)seg, STREAM_CHUNK * 2, 0);   // -> netTask
+        if (g_voiceSB) xStreamBufferSend(g_voiceSB, seg, STREAM_CHUNK * 2, 0);   // -> netTask
+#ifndef CODEY_FACTORY
         if (!M5.Mic.record(g_seg[g_segHead], STREAM_CHUNK, REC_RATE)) break;               // 补回该槽
         g_segHead ^= 1;
+#endif
       }
       if (now - g_voiceT0 > 20000) { g_vphase = 2; g_finalReqT0 = 0; }    // 20s 上限兜底(停录由按键触发)
     } else if (g_vphase == 2) {                           // FINALIZE:请求 final 并等待(在录尾段任其自然完成放槽)
@@ -820,11 +941,17 @@ void loop() {
   }
 
   // ---- IMU: shake to switch page + raise/move to wake the screen ----
+#ifdef CODEY_FACTORY
+  GetHAL().updateImuData();
+  const auto& imu = GetHAL().getImuData();
+  float ax = imu.accelX, ay = imu.accelY, az = imu.accelZ;
+#else
   M5.Imu.update();
   float ax, ay, az; M5.Imu.getAccel(&ax, &ay, &az);
+#endif
   float mag = sqrtf(ax * ax + ay * ay + az * az);
   float motion = fabsf(mag - g_accMag); g_accMag = mag;
-  bool active = M5.BtnA.isPressed() || M5.BtnB.isPressed() || motion > 0.10f;
+  bool active = CODEY_BTN_A.isPressed() || CODEY_BTN_B.isPressed() || motion > 0.10f;
   if (!g_dim && !g_voice && mag > 1.9f && now - g_lastShake > 900) {     // shake -> next provider (main only)
     if (detailProv < 0 && !g_listView) page = nextProv(page, 1);   // 详情/列表态下摇晃不切 provider;跳过禁用页
     g_lastShake = now; active = true;
@@ -832,15 +959,20 @@ void loop() {
   }
   if (active) lastActiveMs = now;
   bool wantDim = (now - lastActiveMs > 20000);                           // dim after 20s idle
-  if (wantDim != g_dim) { g_dim = wantDim; M5.Display.setBrightness(g_dim ? 12 : g_bright); }
+  if (wantDim != g_dim) { g_dim = wantDim; codeySetBrightness(g_dim ? 12 : g_bright); }
 
   if (now - lastSecMs >= 1000) {          // refresh real time + battery + WiFi status once a second
     lastSecMs = now;
+#ifdef CODEY_FACTORY
+    g_batt = GetHAL().getBatteryLevel();
+    readClock();
+#else
     int b = M5.Power.getBatteryLevel(); if (b >= 0) g_batt = constrain(b, 0, 100);
     readClock();
     g_wifi = (WiFi.status() == WL_CONNECTED);
     if (g_wifi) { String s = WiFi.SSID(); strncpy(g_ssid, s.c_str(), sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0; }
     if (timeSane(time(nullptr)) && !g_rtcSynced) { syncRtcFromSystem(); g_rtcSynced = true; }  // netTask set clock -> RTC once
+#endif
   }
   // 不在主loop poll usage:fetchState 已搬进 netTask(异步,不阻塞渲染)
   updateAnim(now);
@@ -848,5 +980,7 @@ void loop() {
   // 重绘限到 ~30fps;语音叠层仍每帧重绘以保持粒子顺滑。
   static uint32_t lastRender = 0;
   if (g_forceRender || now - lastRender >= 33) { render(); lastRender = now; g_forceRender = false; }   // 语音底图已缓存,无需强制每帧重渲;~30fps + 快循环查按键
+#ifndef CODEY_FACTORY
   delay(g_voice ? 2 : 5);
+#endif
 }

@@ -2,13 +2,15 @@
 // provider-arc) + 状态/心情/格式 helpers。单 TU 习惯:依赖 .ino 的全局(cv/g_batt/g_wifi/g_companionOk/
 // g_ssid/PROV/g_ringA·B/g_ringAok·Bok)与 codey_mascot.h 的 drawArc —— 本头在它们之后 #include。
 #pragma once
+#ifndef CODEY_FACTORY
 #include <M5Unified.h>
+#endif
 #include "codey_theme.h"
 #include "codey_ui.h"
 #include "session_store.h"
 
 // ---------- header (dot + name · clock · battery) ----------
-static void drawHeader(const Prov& p, const String& clock) {
+static void drawHeader(const Prov& p, const std::string& clock) {
   uint16_t cc = c565(p.color);
   cv.loadFont(Grotesk20);                              // 名称走 VLW(去颗粒)
   int nameW = cv.textWidth(p.name);
@@ -32,7 +34,7 @@ static void drawHeader(const Prov& p, const String& clock) {
   cv.fillRect(bx + 22, by + 4, 2, 4, bc);
   cv.fillRect(bx + 1, by + 1, max(2, (int)((22 - 3) * (g_batt / 100.0f))), 10, bc);
   cv.setTextColor(bc);
-  cv.drawString(String(g_batt).c_str(), bx + 28, ry);
+  cv.drawString(std::to_string(g_batt).c_str(), bx + 28, ry);
   cv.unloadFont();
 }
 
@@ -51,9 +53,9 @@ static void drawDots(int active, uint32_t color) {
 
 // ---------- WiFi status row (bottom): status dot + SSID, marquee-scrolls if the name is too long ----------
 static void drawWifiStatus(int y) {
-  const uint16_t wifiDot = g_wifi ? c565(0x3CCB7F) : c565(0x6a6d74);          // 前灯: WiFi 连接
+  const uint16_t wifiDot = (g_wifi || g_usbActive) ? c565(0x3CCB7F) : c565(0x6a6d74);
   const uint16_t usbDot  = g_companionOk ? c565(0x3CCB7F) : c565(COL_DANGER); // 后灯: usage 接口可达
-  String ssid = g_wifi ? (g_ssid[0] ? String(g_ssid) : String("WiFi")) : String("No WiFi");
+  std::string ssid = g_usbActive ? "USB" : (g_wifi ? (g_ssid[0] ? g_ssid : "WiFi") : "No WiFi");
   cv.setFont(&fonts::efontCN_16); cv.setTextSize(1);   // CJK-capable (中文 SSID)
   cv.setTextColor(c565(0xB8BAC0));
   const int maxW = 286, dotR = 3, gap = 8;
@@ -79,7 +81,7 @@ static void drawWifiStatus(int y) {
 }
 
 // 倒计时格式(d/h/m/s 紧凑)
-static String fmtDur(long secs) {
+static std::string fmtDur(long secs) {
   if (secs < 0) secs = 0;
   long d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60, s = secs % 60;
   char b[16];
@@ -87,7 +89,7 @@ static String fmtDur(long secs) {
   else if (h > 0) snprintf(b, sizeof(b), "%ldh%02ldm", h, m);
   else if (m > 0) snprintf(b, sizeof(b), "%ldm", m);
   else            snprintf(b, sizeof(b), "%lds", s);
-  return String(b);
+  return std::string(b);
 }
 
 // 用量心情(给主页大吉祥物)
@@ -111,7 +113,7 @@ static const char* moodForStatus(uint8_t status) {
 }
 
 // USAGE/WEEKLY 分段表(还原旧版)
-static void drawMeter(int y, const char* label, int used, const String& reset, uint32_t color) {
+static void drawMeter(int y, const char* label, int used, const std::string& reset, uint32_t color) {
   // 进度条居中:10 段 ×pitch12 → 宽 117,barX=175 使 bars(175..292)居中于 CX(233)。
   // 各元素固定 x(label 右对齐贴条左 / pct·reset 右对齐贴条右),usage 与 weekly 两行互相对齐。
   const int segs = 10; const int labelRightX = 166; const float pitch = 12.0f;
@@ -173,15 +175,19 @@ static void drawSessionCount(int cy, int running, int total) {
 }
 
 // 把某 provider 的弧(=max(sess,week))画进它的缓存环再贴到 cv;主页/列表共用,避免串味
+static int g_arcPct[2] = {-1, -1};
+static uint32_t g_arcColor[2];
 static void blitProviderArc(int provIdx) {
-  static int aPct = -1, bPct = -1; static uint32_t aCol = 0, bCol = 0;
   const Prov& p = PROV[provIdx];
   int pct = max(p.sessUsed, p.weekUsed);
   M5Canvas* spr = (provIdx == 0) ? &g_ringA : &g_ringB;
   bool ok = (provIdx == 0) ? g_ringAok : g_ringBok;
-  int* cpct = (provIdx == 0) ? &aPct : &bPct;
-  uint32_t* ccol = (provIdx == 0) ? &aCol : &bCol;
   if (!ok) { cv.fillSprite(c565(0x000000)); drawArc(cv, p.color, pct); return; }
-  if (pct != *cpct || p.color != *ccol) { spr->fillSprite(c565(0x000000)); drawArc(*spr, p.color, pct); *cpct = pct; *ccol = p.color; }
+  if (pct != g_arcPct[provIdx] || p.color != g_arcColor[provIdx]) {
+    spr->fillSprite(c565(0x000000));
+    drawArc(*spr, p.color, pct);
+    g_arcPct[provIdx] = pct;
+    g_arcColor[provIdx] = p.color;
+  }
   spr->pushSprite(&cv, 0, 0);
 }

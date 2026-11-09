@@ -1,7 +1,9 @@
 // sketches/codey_dash/codey_mascot.h — AA edge-arc + Claude/Codex mascots + idle animation.
 // 单 TU 习惯:依赖全局 canvas `cv`(定义在 .ino,本头在其后 #include)+ codey_theme.h + fonts/*。
 #pragma once
+#ifndef CODEY_FACTORY
 #include <M5Unified.h>
+#endif
 #include "codey_theme.h"
 #include "codey_spring.h"
 
@@ -44,7 +46,8 @@ static void drawArcRange(M5Canvas& dst, uint32_t color, int pct,
       int px = CX + dx; if ((unsigned)px >= (unsigned)SIZE) continue;
       float rr = sqrtf(r2);
       float cov = fminf(rr - (rIn - 0.5f), (rOut + 0.5f) - rr);
-      if (cov <= 0.0f) continue; if (cov > 1.0f) cov = 1.0f;
+      if (cov <= 0.0f) continue;
+      if (cov > 1.0f) cov = 1.0f;
       float d = atan2f((float)dx, -fy) * 57.2957795f;          // design angle (0=top, cw)
       float dn = d - startDeg; if (dn < 0) dn += 360.0f;
       if (dn > sweepDeg) continue;                             // outside this segment
@@ -93,7 +96,7 @@ static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float
   auto PX = [&](float v) { return ox + v * cell; };
   auto PY = [&](float v) { return oy + v * cell; };
 
-  uint32_t colHi = shade(color, 0.22), colLo = shade(color, -0.26);
+  uint32_t colLo = shade(color, -0.26);
 
   drawAvatarOrb(ccx, ccy, (int)(63 * scale), color);   // 3D-shaded backing orb
 

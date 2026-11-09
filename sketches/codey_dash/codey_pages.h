@@ -2,7 +2,9 @@
 // 单 TU 习惯:依赖 .ino 的全局(PROV/g_disp/g_model/g_codexModel/g_clkH·M/g_batt/bootMs/page/detailProv/
 // detailIdx/g_listView/g_list*/g_voice)与前向声明(drawVoiceOverlay/ensureProvVisible 在本头 #include 之前可见)。
 #pragma once
+#ifndef CODEY_FACTORY
 #include <M5Unified.h>
+#endif
 #include "codey_theme.h"
 #include "codey_ui.h"
 #include "session_store.h"
@@ -10,6 +12,14 @@
 #include "codey_widgets.h"
 
 // ---------- compose one page ----------
+static long codeyEpoch() {
+#ifdef CODEY_FACTORY
+  return factoryEpoch();
+#else
+  return time(nullptr);
+#endif
+}
+
 static void renderPage() {                   // 画当前层(主页/列表/详情)到 cv
   ensureProvVisible();                       // 当前页落在被禁用 provider 上 → 吸附到启用页
   if (detailProv >= 0)      renderDetailPage();
@@ -27,11 +37,11 @@ static void render() {
       if (g_voiceBgOk) { cv.pushSprite(&g_voiceBg, 0, 0); g_voiceBgDirty = false; }   // 入缓存
     }
     drawVoiceOverlay();                       // 叠层元素(听写环/转写/状态)
-    cv.pushSprite(0, 0);
+    pushFrame();
     return;
   }
   renderPage();
-  cv.pushSprite(0, 0);
+  pushFrame();
 }
 
 // 跨端等待提醒:首个 waiting 会话画橙色胶囊;limited 则红色 RATE LIMITED。
@@ -75,7 +85,7 @@ static void renderUsagePage(int provIdx) {
   const Prov& p = PROV[provIdx];
   blitProviderArc(provIdx);
   char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", g_clkH, g_clkM);
-  drawHeader(p, String(clk));
+  drawHeader(p, std::string(clk));
   float t = (millis() - bootMs) / 1000.0f;
   const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
   drawMascot(provIdx, CX, 150, p.color, mood, t, 1.0f);
@@ -86,9 +96,9 @@ static void renderUsagePage(int provIdx) {
     cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
     cv.drawString(mdl, CX, 226); cv.unloadFont();
   }
-  long nowE = time(nullptr); bool epochOK = epochSane(nowE);
-  String sR = (epochOK && p.sessReset > nowE) ? fmtDur(p.sessReset - nowE) : String("");
-  String wR = (epochOK && p.weekReset > nowE) ? fmtDur(p.weekReset - nowE) : String("");
+  long nowE = codeyEpoch(); bool epochOK = epochSane(nowE);
+  std::string sR = (epochOK && p.sessReset > nowE) ? fmtDur(p.sessReset - nowE) : std::string("");
+  std::string wR = (epochOK && p.weekReset > nowE) ? fmtDur(p.weekReset - nowE) : std::string("");
   drawMeter(250, "usage",  p.sessUsed, sR, p.color);
   drawMeter(286, "weekly", p.weekUsed, wR, p.color);
   drawSessionCount(344, p.activeCount, p.nsess);    // session 运行/总数(运行数绿)
@@ -228,7 +238,7 @@ static void renderDetailPage() {
   cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44); cv.unloadFont();
 
   // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)。MODEL 列关 → 只显时长。
-  long nowE = time(nullptr); bool epochOK = epochSane(nowE);
+  long nowE = codeyEpoch(); bool epochOK = epochSane(nowE);
   long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
   char el[16]; fmtElapsed(elapsed, el, sizeof(el));
   char l2[64];
@@ -267,7 +277,7 @@ static void renderDetailPage() {
       int tcx = cx0 + k * (tw + gap);
       drawStatTile(cx0 + k * (tw + gap), ty, tw, th, tiles[k].label, tiles[k].value, color);
       if (tiles[k].col == DC_CTX && s.compactions > 0) {
-        char cc[8]; snprintf(cc, sizeof(cc), "%dc", s.compactions);
+        char cc[12]; snprintf(cc, sizeof(cc), "%dc", s.compactions);
         cv.loadFont(JBMono16); cv.setTextDatum(top_right); cv.setTextColor(c565(0xffa94d));
         cv.drawString(cc, tcx + tw / 2 - 7, ty - th / 2 + 5); cv.unloadFont();
       }
@@ -319,15 +329,15 @@ static void renderDetailPage() {
     cv.drawString(cbud, CX, 340); cv.unloadFont();
   }
 
-  // 点屏切 Mac 终端 tab 的提示(仅 WS 连上时显示,避免离线误导)
-  if (g_wsConn) {
+  // 点屏聚焦终端会话，USB 或 WebSocket 在线时显示。
+  if (g_wsConn || g_usbActive) {
     cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x55585f));
-    cv.drawString("点屏 → 切到 Mac", CX, 384);
+    cv.drawString("点屏 → 聚焦会话", CX, 384);
   }
 
   // 底部:位置点 + i/N
   int nd = p.nsess > 9 ? 9 : p.nsess;
-  char pos[12]; snprintf(pos, sizeof(pos), "%d/%d", detailIdx + 1, p.nsess);
+  char pos[24]; snprintf(pos, sizeof(pos), "%d/%d", detailIdx + 1, p.nsess);
   cv.loadFont(JBMono16); int posW = cv.textWidth(pos);     // 位置 i/N 走 VLW
   const int dotW = 7, dgap = 6;
   int dotsW = nd * dotW + (nd - 1) * dgap;

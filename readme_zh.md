@@ -8,6 +8,25 @@ Codey 是一个面向 M5Stack StopWatch（SKU C152，ESP32-S3）的 Claude Code 
 
 English documentation: [readme.md](readme.md).
 
+## 在 M5Stack 出厂固件中运行 Codey
+
+基于 M5Stack 官方源码的组合镜像在原生启动器中提供 Codey。Codey 复用独立固件的额度页、会话列表和详情、会话聚焦、实时语音转写、完成提示音及亮度设置。USB 连接 Companion 时优先用 USB 传输，拔线后自动恢复通过系统 Wi-Fi 获取状态。正在录制的语音绑定到开始时的通道，连接中断后可重新录制。
+
+在启用了 **ESP-IDF 5.5.4** 的终端中，从仓库根目录运行以下命令。手表和电脑连到同一局域网后，Codey 默认在 UDP `8789` 上自动发现 Companion，并使用信标公布的状态和语音端口。只走 USB 时传入 `--usb-only`。
+
+```powershell
+python scripts/prepare_stopwatch_factory.py
+cd build/stopwatch-factory
+python fetch_repos.py
+idf.py build
+```
+
+脚本固定到官方仓库中已提供系统 Wi-Fi 的提交 `81099c7`，在 `build/stopwatch-factory` 中注册 Codey。局域网阻断广播时，可在构建时用 `--companion-host` 指定备用地址，并用 `--companion-port` 和 `--asr-port` 覆盖该地址的默认端口。若修改了 Companion 的 `CODEY_DISCOVERY_PORT`，固件构建时用 `--discovery-port` 指定相同端口。已有 ngrok 配置时，可传入 `--remote-host` 使用远程 HTTPS/WSS。若隧道启用 Basic Auth，准备镜像时用环境变量 `CODEY_REMOTE_BASIC_AUTH` 传入 `user:pass`，该凭据会写入私用镜像。
+
+在 C152 上通过 `idf.py -p COMx flash` 烧录组合镜像，把 `COMx` 换成实际端口。按下文方式启动 Companion 并从启动器打开 Codey。走 Wi-Fi 时在原厂 **Settings → Wi-Fi** 中连接同一局域网。走 USB 时用数据线连接电脑，由 Companion 建立有线会话，也可从 Companion 管理台为手表配置系统 Wi-Fi。USB 端口用于 Codey 二进制协议，固件调试日志走 UART。
+
+在用量页上滑进入会话列表，点选会话查看详情。详情页点按向 Companion 发送聚焦请求。按 B 开始或结束录音，按 A 取消。长按 A 打开 Codey 设置，同时长按 A 和 B 返回启动器。需要恢复出厂镜像时，可使用 [M5Burner 官方恢复指南](https://docs.m5stack.com/en/guide/restore_factory/stopwatch)。
+
 ## 功能
 
 - 在 M5 StopWatch 上展示 Claude Code 与 Codex 使用量。

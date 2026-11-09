@@ -1,8 +1,10 @@
 // sketches/codey_dash/codey_usb.h — USB-CDC 有线兜底:帧 C0 DE|type|len(2 LE)|payload|crc16(2 LE)。
 // 与日志共用单路 HWCDC;发送加锁减少与 println 交错,接收用增量状态机。companion 端 codey/usb_frames.py 同构。
 #pragma once
+#ifndef CODEY_FACTORY
 #include <Arduino.h>              // uint8_t/size_t/Serial(与同目录其他头一致,自含依赖)
 #include <freertos/semphr.h>      // SemaphoreHandle_t / xSemaphore*
+#endif
 
 static const uint8_t USB_M0 = 0xC0, USB_M1 = 0xDE;
 enum { U_HELLO = 0x01, U_STATE_REQ = 0x10, U_LISTEN = 0x20, U_PCM = 0x21, U_FOCUS = 0x30,
@@ -10,7 +12,9 @@ enum { U_HELLO = 0x01, U_STATE_REQ = 0x10, U_LISTEN = 0x20, U_PCM = 0x21, U_FOCU
        U_HELLO_ACK = 0x81, U_STATE = 0x90, U_STT = 0xA0,
        U_CFG_STATE = 0x91, U_CFG_ACK = 0x92 };                 // device->companion:CFG_GET/CFG_SET 的响应
 
+#ifndef CODEY_FACTORY
 static SemaphoreHandle_t g_usbTxMtx = nullptr;   // setup 里 create;序列化整帧写出
+#endif
 
 static uint16_t usbCrc16Upd(uint16_t c, const uint8_t* d, size_t n) {
   for (size_t i = 0; i < n; i++) { c ^= (uint16_t)d[i] << 8;
@@ -26,9 +30,13 @@ static void usbSendFrame(uint8_t type, const uint8_t* p, uint16_t n) {
   uint16_t c = usbCrc16Upd(0xFFFF, head + 2, 3);        // crc over type+len
   c = usbCrc16Upd(c, p, n);                             //          +payload
   uint8_t tail[2] = { (uint8_t)(c & 0xFF), (uint8_t)(c >> 8) };
+#ifdef CODEY_FACTORY
+  factoryUsbWrite(head, p, n, tail);
+#else
   if (g_usbTxMtx) xSemaphoreTake(g_usbTxMtx, portMAX_DELAY);
   Serial.write(head, 5); if (n) Serial.write(p, n); Serial.write(tail, 2);
   if (g_usbTxMtx) xSemaphoreGive(g_usbTxMtx);
+#endif
 }
 
 // 增量接收状态机:每收到一整帧调 usbOnFrame()(Task 5 在 codey_net.h 里给出完整定义)。
@@ -68,6 +76,10 @@ static void usbRxByte(uint8_t b) {
 }
 
 static void usbRxPump() {                  // 非阻塞 drain
+#ifdef CODEY_FACTORY
+  factoryUsbRead();
+#else
   int avail = Serial.available();
   while (avail-- > 0) { int c = Serial.read(); if (c < 0) break; usbRxByte((uint8_t)c); }
+#endif
 }
