@@ -5,14 +5,14 @@
   POST /codey/asr     16k/16-bit/mono WAV -> { text }(本机 whisper)
 
 数据全部读本地文件 / 进程(ps/lsof/git/transcript),不直连任何在线 API。
-运行:  python3 codey_companion.py   (运行期间保持开启供手表拉取)
+运行:  python3 codey_companion.py   (运行期间保持开启供手表拉取;Windows: py -3 codey_companion.py)
 """
 import os
 import threading
 from http.server import ThreadingHTTPServer
 
 import asr_stream
-from codey.netinfo import lan_ip
+from codey.netinfo import lan_ip, lan_ips
 from codey.server import App, make_handler
 
 PORT = int(os.environ.get("CODEY_PORT") or 8787)
@@ -48,12 +48,16 @@ def main():
     asr_stream.set_status_resolver(app.status_for_session)                # 语音流式同步:仅 waiting(空闲)会话才注入
     maybe_fallback_engine()                                               # 豆包不可达/延时高 → 本运行回落本地 sherpa
     threading.Thread(target=asr_stream.run_server, daemon=True).start()   # ASR WS :8788(同进程)
-    print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={asr_stream.effective_engine()})")
+    print(f"Codey ASR       -> ws://{lan_ip()}:{asr_stream.PORT}  (engine={asr_stream.effective_engine()})")
     from codey import usb_link
     threading.Thread(target=usb_link.run, args=(app, asr_stream.make_backend), daemon=True).start()
-    print(f"Codey USB link  -> /dev/cu.usbmodem* (有线兜底,优先)")
+    usb_hint = "COMx (Espressif VID 303A)" if os.name == "nt" else "/dev/cu.usbmodem*"
+    print(f"Codey USB link  -> {usb_hint} (有线兜底,优先)")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), make_handler(app))
     print(f"Codey companion -> http://{lan_ip()}:{PORT}/codey/state  (port {PORT})")
+    others = lan_ips()[1:]
+    if others:
+        print(f"                   其它候选 IP: {', '.join(others)}(手表门户里填你和手表同一 Wi-Fi 的那个)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

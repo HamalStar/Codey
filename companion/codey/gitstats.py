@@ -2,6 +2,8 @@
 import re
 import subprocess
 
+from .util import NO_WINDOW
+
 
 def parse_git_shortstat(text):
     s = str(text if text is not None else "")
@@ -16,7 +18,8 @@ def parse_git_shortstat(text):
 def _git(cwd, args, timeout=4):
     try:
         r = subprocess.run(["git", "-C", cwd, *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout,
+                           creationflags=NO_WINDOW)
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""

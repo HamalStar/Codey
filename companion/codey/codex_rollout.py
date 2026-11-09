@@ -5,7 +5,7 @@ cache_read 单列;rate_limits 按 window_minutes<=300 分 5h / 周。
 """
 import json
 
-from .util import parse_ts_ms
+from .util import parse_ts_ms, path_parts
 
 
 def codex_tool_arg(name, args_json):
@@ -20,7 +20,7 @@ def codex_tool_arg(name, args_json):
         cmd = " ".join(str(x) for x in cmd) if isinstance(cmd, list) else str(cmd)
         return cmd.split("\n")[0][:40]
     if a.get("path"):
-        return "/".join(str(a["path"]).split("/")[-2:])
+        return "/".join(path_parts(a["path"])[-2:])
     if a.get("pattern"):
         return str(a["pattern"])
     return ""

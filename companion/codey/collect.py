@@ -57,6 +57,30 @@ def tokens_per_min(prev, cur):
     return max(0, round((cur["tokens"] - prev["tokens"]) / dt))
 
 
+_transcript_cache = {}   # path -> (mtime, size, parsed):transcript 没变就不重读重解析(大会话可达数 MB)
+
+
+def _parsed_transcript(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return parse_claude_transcript("")
+    key = (st.st_mtime, st.st_size)
+    hit = _transcript_cache.get(path)
+    if hit and hit[:2] == key:
+        return hit[2]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    parsed = parse_claude_transcript(text)
+    if len(_transcript_cache) > 64:
+        _transcript_cache.clear()
+    _transcript_cache[path] = (*key, parsed)
+    return parsed
+
+
 def collect_sessions():
     pmap = read_ps()
     ports_map = read_listen_ports()
@@ -64,12 +88,7 @@ def collect_sessions():
 
     claude = []
     for d in discover.discover_claude_sessions(discover.default_claude_home_dirs(), aliver):
-        try:
-            with open(d["transcript_path"], encoding="utf-8") as fh:
-                text = fh.read()
-        except OSError:
-            text = ""
-        parsed = parse_claude_transcript(text)
+        parsed = _parsed_transcript(d["transcript_path"])
         status = derive_status(
             has_active_descendant=has_active_descendant(pmap, d["pid"]),
             pending_tool=parsed["pending_tool"],
@@ -87,17 +106,12 @@ def collect_sessions():
     codex_root = os.path.join(os.path.expanduser("~"), ".codex")
     now_ms = time.time() * 1000
     for roll in discover.list_codex_rollouts(codex_root):
-        try:
-            with open(roll["path"], encoding="utf-8") as fh:
-                text = fh.read()
-        except OSError:
-            text = ""
-        parsed = parse_codex_rollout(text)
+        if (now_ms - roll["mtime_ms"]) >= CODEX_FRESH_WINDOW_MS:
+            break                                    # 按 mtime 降序:后面全是过期的,不必再读(.zst 解压不便宜)
+        parsed = parse_codex_rollout(discover.read_rollout_text(roll["path"]))
         if not parsed["session_id"] or parsed["session_id"] in seen:
             continue
         seen.add(parsed["session_id"])               # 标记最新 rollout 代表该会话
-        if (now_ms - roll["mtime_ms"]) >= CODEX_FRESH_WINDOW_MS:
-            continue
         status = derive_status(done=parsed["done"], model_generating=False)
         git = read_git_stats(parsed["cwd"])
         codex.append(build_codex_session(

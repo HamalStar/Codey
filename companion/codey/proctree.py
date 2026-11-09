@@ -1,6 +1,10 @@
-"""进程树 / 监听端口:ps、lsof 解析 + 后代收集(macOS 本地子进程,无网络)。"""
+"""进程树 / 监听端口:ps、lsof 解析 + 后代收集(macOS 本地子进程,无网络)。
+Windows 没有 ps/lsof,改由 winapi(Toolhelp 快照 + GetExtendedTcpTable)产出同构结果。"""
+import os
 import re
 import subprocess
+
+_WIN = os.name == "nt"
 
 
 def parse_ps(text):
@@ -60,8 +64,14 @@ def _run(cmd, timeout=4):
 
 
 def read_ps():
+    if _WIN:
+        from . import winapi
+        return winapi.process_map()
     return parse_ps(_run(["ps", "-axo", "pid,ppid,rss,pcpu,comm"]))
 
 
 def read_listen_ports():
+    if _WIN:
+        from . import winapi
+        return winapi.listen_ports()
     return parse_lsof_listen(_run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"]))

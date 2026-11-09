@@ -5,6 +5,7 @@
 import asyncio
 import glob
 import json
+import os
 import queue
 import threading
 import time
@@ -120,7 +121,19 @@ def _emit_dev_logs(log_buf, new_bytes):
         del log_buf[:-256]
 
 
+ESPRESSIF_VID = 0x303A   # ESP32-S3 原生 USB(USB-Serial-JTAG / HWCDC)
+_WIN = os.name == "nt"
+
+
 def find_port():
+    if _WIN:
+        # Windows 上是 COMx:按 Espressif VID 找(不会误连其它串口设备)。
+        try:
+            from serial.tools import list_ports
+        except ImportError:
+            return None
+        hits = sorted(p.device for p in list_ports.comports() if p.vid == ESPRESSIF_VID)
+        return hits[0] if hits else None
     hits = sorted(glob.glob("/dev/cu.usbmodem*"))
     return hits[0] if hits else None
 

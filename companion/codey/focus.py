@@ -6,16 +6,21 @@
   pane_id → `kaku cli activate-pane` → 前置 GUI。
 - 回退 iTerm2 / Terminal.app:AppleScript 按 `tty of session/tab` 选中并前置。
 仅作用于正在运行的终端(不主动拉起)。Kaku/iTerm/Terminal 任一命中即成功。
+
+Windows:没有 tty,也没有可按 pane 注入文本的终端 CLI —— pane_for_pid 恒为 None(语音走粘贴),
+focus_pid 沿进程祖先链把会话所在窗口(Windows Terminal / VS Code / Claude 桌面版…)前置。
 """
 import json
 import os
 import shutil
 import subprocess
 
+_WIN = os.name == "nt"
+
 
 def tty_for_pid(pid):
     """PID → 控制终端路径(如 '/dev/ttys003');无控制终端返回 None。"""
-    if not pid:
+    if not pid or _WIN:
         return None
     try:
         out = subprocess.check_output(
@@ -149,6 +154,11 @@ end tell'''
 
 def focus_pid(pid):
     """把终端切到 PID 所在的 pane/tab。返回 (ok, reason)。"""
+    if _WIN:
+        if not pid:
+            return False, "no-pid"
+        from . import winapi
+        return winapi.focus_process_window(int(pid))
     tty = tty_for_pid(pid)
     if not tty:
         return False, "no-tty"

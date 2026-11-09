@@ -8,11 +8,11 @@ cd "$(dirname "$0")/.."
 
 FQBN="m5stack:esp32:m5stack_stopwatch"
 SKETCH="${1:-sketches/hello_stopwatch}"
-PORT="${2:-$(arduino-cli board list | awk '/usbmodem|usbserial/{print $1; exit}')}"
+PORT="${2:-$(arduino-cli board list | awk '/usbmodem|usbserial|^COM[0-9]+ .*USB/{print $1; exit}')}"
 
 if [ -z "${PORT:-}" ]; then
   echo "No serial port found."
-  echo "Plug in the StopWatch (shows up as /dev/cu.usbmodem*)."
+  echo "Plug in the StopWatch (shows up as /dev/cu.usbmodem* on macOS, COMx on Windows)."
   echo "If it still won't connect, enter download mode: long-press reset ~2s until the green LED lights."
   exit 1
 fi

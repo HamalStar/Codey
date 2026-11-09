@@ -41,7 +41,8 @@ English documentation: [readme.md](readme.md).
 - `pending_reviews` 目前还是 Companion 响应里的占位字段。
 - `sketches/codey_dash/codey_dash.ino` 中仍有硬编码的 Mac hostname 和 fallback IP。
 - 语音输入目前主要完成转写，尚未接入具体命令执行。
-- Codex 使用量依赖 CodexBar 的 macOS 缓存路径；没有该缓存时 Codex 使用量显示为 0。
+- Codex 使用量优先读 CodexBar 的 macOS 缓存；没有时回落 Codex 自己 rollout 里最近的
+  `rate_limits`（Windows 即走这条，见下文「Windows」）。
 - 用量数据完全离线读取（statusline 文件 + CodexBar 缓存）；仅可选的豆包 ASR 引擎会联网。
 
 ## 项目结构
@@ -57,7 +58,9 @@ Codey/
 │   ├── codey/                   # Python 包（state、quota、collect、asr、paste 等）
 │   ├── web/                     # Web 管理台（设备镜像 + 识别历史）
 │   ├── deploy.sh                # 一键启动脚本（预检 + start/stop/status）
+│   ├── deploy.ps1               # Windows 版启动脚本（同上）
 │   ├── codey-statusline.sh      # Claude Code statusline 使用量捕获脚本
+│   ├── codey_statusline.py      # 同上，跨平台 Python 版（Windows 用这个）
 │   ├── models/                  # Whisper / sherpa-onnx 模型文件
 │   └── data/                    # ASR 识别历史 JSONL（已 gitignore）
 ├── docs/
@@ -227,6 +230,67 @@ open http://127.0.0.1:8787/
 
 首次启动时，手表会创建名为 `Codey-Setup` 的 Wi-Fi 配网热点。用手机或电脑连接该热点，
 打开 `192.168.4.1`，选择与运行 Companion 的 Mac 相同的局域网。
+
+## Windows
+
+Companion 可以跑在 Windows 10/11 上。macOS 专属的 `ps`/`lsof`/`pbcopy`/`osascript`
+在 Windows 上由 `companion/codey/winapi.py`（ctypes，仅标准库）提供等价实现。
+
+| 功能 | Windows 上 | 说明 |
+|---|---|---|
+| Claude / Codex 会话列表、状态、内存、端口 | ✅ | 进程表用 Toolhelp 快照，端口用 `GetExtendedTcpTable` |
+| Claude 额度 | ✅ | 用跨平台的 `codey_statusline.py` 代替 `codey-statusline.sh` |
+| Codex 额度 | ✅ | 无 CodexBar，读 `~/.codex/sessions` 里最近的 `rate_limits` |
+| 新版 Codex 的 `.jsonl.zst` 会话记录 | ✅ | 需要 `pip install zstandard`（Mac 同样适用） |
+| 语音转写粘贴 / 回车 / 清空 | ✅ | Win32 剪贴板 + 模拟 Ctrl+V / Enter / Ctrl+A+Backspace |
+| 手表「切到此会话」 | ⚠️ 窗口级 | 把会话所在的 Windows Terminal / VS Code / Claude 桌面版窗口前置，选不到具体标签页 |
+| 语音流式同步进终端 pane | ❌ | 依赖 Kaku 的 `send-text`；Windows 上自动改为松开后粘贴 |
+| USB 有线兜底 | ✅ | 按 Espressif VID `303A` 自动找 `COMx` |
+
+### 安装与启动（PowerShell）
+
+```powershell
+cd companion
+py -3 -m pip install numpy websockets sherpa-onnx pyserial zstandard
+# 按上文「ASR 模型」把 sherpa 模型放进 companion\models\
+.\deploy.ps1              # 前台启动；后台：.\deploy.ps1 start -Bg；另有 stop / restart / status
+```
+
+- 提示「禁止运行脚本」时改用 `powershell -ExecutionPolicy Bypass -File .\deploy.ps1`。
+- 第一次启动时 Windows 防火墙会弹窗，请允许 Python 访问**专用网络**，否则手表连不上 8787 / 8788。
+- 启动日志会打印本机 IP 和其它候选 IP。Windows 上常同时有 VPN、虚拟机、WSL 网卡，
+  Companion 会尽量挑真实局域网地址；以 `ipconfig` 里与手表同一 Wi-Fi 的那个为准。
+
+### 手表连接
+
+Windows 没有 Mac 那样稳定的 mDNS 主机名。手表配网页（`Codey-Setup` 热点 → `192.168.4.1`）里
+把 **Companion Mac IP** 填成电脑的局域网 IP 即可（建议在路由器里给电脑固定 IP）。
+也可以直接用 USB-C 线把手表接到电脑：Companion 会自动走有线链路，不需要配网。
+
+### Claude 额度（statusline）
+
+在 `%USERPROFILE%\.claude\settings.json` 里加上（路径换成你的实际位置，用正斜杠）：
+
+```json
+"statusLine": { "type": "command", "command": "py -3 C:/path/to/Codey/companion/codey_statusline.py" }
+```
+
+状态栏会显示 `模型 · 5h 42% · 7d 18%`；已经有自己的 statusline 时，把原命令放进环境变量
+`CODEY_STATUSLINE_CMD`，脚本会把同一份输入交给它并原样输出。只有会执行 statusline 的 Claude Code
+界面（终端）才会刷新额度文件。
+
+### 编译烧录固件
+
+```powershell
+winget install ArduinoSA.CLI
+```
+
+然后按上文「初始化」安装 M5Stack 开发板包和库。`scripts/*.sh` 可以在 Git Bash 里直接运行
+（会自动识别 `COMx` 串口），也可以手动执行：
+
+```powershell
+arduino-cli compile --fqbn m5stack:esp32:m5stack_stopwatch --libraries libs --upload --port COM5 sketches/codey_dash
+```
 
 ## Companion 服务
 

@@ -30,6 +30,21 @@ def list_transcripts(proj_dir):
 def encode_cwd(cwd):
     return re.sub(r"[^a-zA-Z0-9]", "-", cwd)
 
+def find_project_dir(claude, session_id):
+    """在 <claude>/projects/* 下找含 <session_id>.jsonl 的目录;找不到返回 None。"""
+    if not session_id:
+        return None
+    root = os.path.join(claude, "projects")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    for n in names:
+        d = os.path.join(root, n)
+        if os.path.isfile(os.path.join(d, session_id + ".jsonl")):
+            return d
+    return None
+
 
 def count_subagents(subagents_dir):
     try:
@@ -57,6 +72,11 @@ def discover_claude_sessions(home_dirs, aliver_pids):
                 continue
             proj_dir = os.path.join(claude, "projects", encode_cwd(meta.get("cwd") or ""))
             transcripts = list_transcripts(proj_dir)
+            if not transcripts:
+                # 超长 cwd 的目录名会被 Claude Code 截断并加 hash 后缀(Windows 深路径常见),
+                # encode_cwd 对不上 —— 按 sessionId 在所有 projects/* 里找。
+                proj_dir = find_project_dir(claude, meta.get("sessionId")) or proj_dir
+                transcripts = list_transcripts(proj_dir)
             direct = next((t for t in transcripts if t["sid"] == meta.get("sessionId")), None)
             chosen = direct or pick_latest_transcript(transcripts, meta.get("startedAt") or 0, claimed)
             if not chosen:
@@ -110,7 +130,7 @@ def list_codex_rollouts(codex_root, limit=40):
                     continue
                 if e.is_dir():
                     walk(e.path, depth + 1)
-                elif re.match(r"^rollout-.*\.jsonl$", e.name):
+                elif re.match(r"^rollout-.*\.jsonl(\.zst)?$", e.name):   # 新版 Codex 会把 rollout 压成 .zst
                     out.append({"path": e.path, "mtime_ms": e.stat().st_mtime * 1000})
             except OSError:
                 continue
@@ -118,3 +138,46 @@ def list_codex_rollouts(codex_root, limit=40):
     walk(root, 0)
     out.sort(key=lambda x: x["mtime_ms"], reverse=True)
     return out[:limit]
+
+
+_rollout_cache = {}   # path -> (mtime_ms, size, text):rollout 未变就不重读/重解压
+
+
+def read_rollout_text(path):
+    """读 rollout 文本;.zst 用 zstandard 解压(可选依赖,缺失则返回 "")。
+    正在写入的 .zst 末尾可能是半个帧:保留已解出的完整部分。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    key = (st.st_mtime * 1000, st.st_size)
+    hit = _rollout_cache.get(path)
+    if hit and hit[:2] == key:
+        return hit[2]
+    try:
+        if path.endswith(".zst"):
+            try:
+                import zstandard
+            except ImportError:
+                return ""
+            chunks = []
+            with open(path, "rb") as fh:
+                reader = zstandard.ZstdDecompressor().stream_reader(fh, read_across_frames=True)
+                try:
+                    while True:
+                        b = reader.read(1 << 20)
+                        if not b:
+                            break
+                        chunks.append(b)
+                except zstandard.ZstdError:
+                    pass
+            text = b"".join(chunks).decode("utf-8", "ignore")
+        else:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+    except OSError:
+        return ""
+    if len(_rollout_cache) > 64:
+        _rollout_cache.clear()
+    _rollout_cache[path] = (*key, text)
+    return text

@@ -44,8 +44,8 @@ In progress / rough edges:
 - The watch firmware still has a hardcoded Mac hostname and fallback IP in
   `sketches/codey_dash/codey_dash.ino`.
 - Voice input currently focuses on transcription; command execution is not wired in.
-- Codex usage depends on CodexBar's macOS cache path. Without that app/cache, Codex
-  usage displays as zero.
+- Codex usage prefers CodexBar's macOS cache; without it, the companion falls back to the
+  latest `rate_limits` in Codex's own rollout files (this is the path used on Windows).
 - Usage data is read fully offline (statusline file + CodexBar cache); only the optional
   Doubao ASR engine reaches the internet.
 
@@ -62,7 +62,9 @@ Codey/
 │   ├── codey/                   # Python package (state, quota, collect, asr, paste, ...)
 │   ├── web/                     # Web admin UI (device mirror + ASR history)
 │   ├── deploy.sh                # One-command launcher (preflight + start/stop/status)
+│   ├── deploy.ps1               # Windows launcher (same commands)
 │   ├── codey-statusline.sh      # Claude Code statusline usage capture
+│   ├── codey_statusline.py      # Same, cross-platform Python version (use on Windows)
 │   ├── models/                  # Whisper / sherpa-onnx model files
 │   └── data/                    # ASR history JSONL (gitignored)
 ├── docs/
@@ -236,6 +238,40 @@ Open the serial monitor:
 
 On first boot, the watch opens a Wi-Fi setup hotspot named `Codey-Setup`. Join it from a
 phone or laptop, open `192.168.4.1`, and select the LAN used by the Mac running the companion.
+
+## Windows
+
+The companion runs on Windows 10/11. The macOS-only `ps`/`lsof`/`pbcopy`/`osascript` calls
+are replaced by `companion/codey/winapi.py` (ctypes, standard library only).
+
+| Feature | On Windows | Notes |
+|---|---|---|
+| Claude / Codex sessions, status, memory, ports | ✅ | Toolhelp snapshot + `GetExtendedTcpTable` |
+| Claude usage | ✅ | Use the cross-platform `codey_statusline.py` instead of `codey-statusline.sh` |
+| Codex usage | ✅ | No CodexBar: reads the latest `rate_limits` from `~/.codex/sessions` |
+| Newer Codex `.jsonl.zst` rollouts | ✅ | Needs `pip install zstandard` (applies to macOS too) |
+| Voice paste / enter / clear | ✅ | Win32 clipboard + simulated Ctrl+V / Enter / Ctrl+A+Backspace |
+| "Switch to this session" | ⚠️ window only | Brings the Windows Terminal / VS Code / Claude desktop window forward; can't pick a tab |
+| Live voice sync into a terminal pane | ❌ | Needs Kaku `send-text`; Windows falls back to paste-on-release |
+| USB wired fallback | ✅ | Finds the `COMx` port by Espressif VID `303A` |
+
+Setup (PowerShell):
+
+```powershell
+cd companion
+py -3 -m pip install numpy websockets sherpa-onnx pyserial zstandard
+.\deploy.ps1              # foreground; background: .\deploy.ps1 start -Bg; also stop / restart / status
+```
+
+- If scripts are blocked: `powershell -ExecutionPolicy Bypass -File .\deploy.ps1`.
+- Allow Python on **private networks** when the Windows Firewall prompt appears.
+- On the watch setup page (`Codey-Setup` → `192.168.4.1`), set **Companion Mac IP** to the PC's
+  LAN IP (printed at startup), or plug the watch in over USB-C to use the wired link.
+- Claude usage: in `%USERPROFILE%\.claude\settings.json` set
+  `"statusLine": {"type": "command", "command": "py -3 C:/path/to/Codey/companion/codey_statusline.py"}`.
+  To keep an existing statusline, put its command in `CODEY_STATUSLINE_CMD`.
+- Firmware: `winget install ArduinoSA.CLI`, then follow Setup. `scripts/*.sh` run in Git Bash and
+  detect `COMx` ports.
 
 ## Companion Service
 

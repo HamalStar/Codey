@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -24,8 +25,10 @@ _HALLUC = [
 
 _HOME = os.path.expanduser("~")
 _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WHISPER_CLI = os.environ.get("CODEY_WHISPER", "/opt/homebrew/bin/whisper-cli")
-WHISPER_SERVER = os.environ.get("CODEY_WHISPER_SERVER", "/opt/homebrew/bin/whisper-server")
+# 默认先找 PATH(Windows / Linux 的 whisper.cpp),再回落 Homebrew 路径。
+WHISPER_CLI = os.environ.get("CODEY_WHISPER") or shutil.which("whisper-cli") or "/opt/homebrew/bin/whisper-cli"
+WHISPER_SERVER = (os.environ.get("CODEY_WHISPER_SERVER") or shutil.which("whisper-server")
+                  or "/opt/homebrew/bin/whisper-server")
 MODEL = os.environ.get("CODEY_WHISPER_MODEL", os.path.join(_PKG_ROOT, "models", "ggml-small.bin"))
 WS_HOST = "127.0.0.1"
 WS_PORT = int(os.environ.get("CODEY_WHISPER_PORT") or 8090)

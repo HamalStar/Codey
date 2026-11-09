@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Serial monitor for the StopWatch @ 115200 baud.
-# Usage:  ./scripts/monitor.sh [/dev/cu.xxx]
+# Usage:  ./scripts/monitor.sh [/dev/cu.xxx | COMx]
 # With no argument it auto-detects the first USB serial port.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CFG="--config-file ./arduino-cli.yaml"
-PORT="${1:-$(arduino-cli $CFG board list | awk '/usbmodem|usbserial/{print $1; exit}')}"
+PORT="${1:-$(arduino-cli $CFG board list | awk '/usbmodem|usbserial|^COM[0-9]+ .*USB/{print $1; exit}')}"
 
 if [ -z "${PORT:-}" ]; then
   echo "No serial port found."

@@ -2,14 +2,13 @@
 import json
 
 from .synthetic import is_synthetic_user_message, text_of
-from .util import parse_ts_ms
+from .util import parse_ts_ms, path_parts
 
 
 def tool_arg(name, inp):
     i = inp or {}
     if name in ("Read", "Edit", "Write"):
-        segs = [p for p in str(i.get("file_path") or "").split("/") if p]
-        return "/".join(segs[-2:])
+        return "/".join(path_parts(i.get("file_path") or "")[-2:])
     if name == "Bash":
         return str(i.get("command") or "").split("\n")[0][:40]
     if name in ("Grep", "Glob"):

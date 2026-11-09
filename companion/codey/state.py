@@ -68,7 +68,7 @@ def build_state(session_cache, tok_rate, chime=None, asr_url="", display=None):
         "active_count": x_agg["active_count"],
         "agg": {"dirty_repos": x_agg["dirty_repos"], "tokens_per_min": tok_rate["codex"]["val"]},
         "sessions": codex_sessions,
-        "_src": "codexbar" if cx else "rollout",
+        "_src": (cx.get("src") or "codexbar") if cx else "none",
     }
 
     return {
